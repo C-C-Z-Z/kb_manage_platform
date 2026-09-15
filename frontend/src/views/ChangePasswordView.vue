@@ -1,0 +1,5 @@
+<script setup lang="ts">
+import { reactive } from "vue"; import { useRouter } from "vue-router"; import { ElMessage } from "element-plus"; import { authApi } from "../api/auth"; import { logout } from "../auth";
+const router=useRouter(); const form=reactive({current_password:"",new_password:""});
+async function submit(){ if(form.new_password.length<8) return ElMessage.warning("新密码至少 8 位"); await authApi.changePassword(form.current_password,form.new_password); ElMessage.success("密码已更新，请重新登录"); await logout(); await router.replace("/login"); }
+</script><template><el-card class="page-card narrow-card" header="修改密码"><el-alert title="修改密码后当前令牌立即失效，需要重新登录。" type="warning" show-icon :closable="false" class="form-alert" /><el-form label-position="top" @submit.prevent="submit"><el-form-item label="当前密码"><el-input v-model="form.current_password" type="password" show-password /></el-form-item><el-form-item label="新密码"><el-input v-model="form.new_password" type="password" show-password /></el-form-item><el-button type="primary" native-type="submit">确认修改</el-button></el-form></el-card></template>

@@ -1,0 +1,18 @@
+﻿services:
+  mysql:
+    ports:
+      - "3306:3306"
+  redis:
+    ports:
+      - "6379:6379"
+  milvus:
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+  backend:
+    volumes:
+      - ./backend:/app
+    command: ["uvicorn", "kb_manage_platform.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
+  worker:
+    volumes:
+      - ./backend:/app

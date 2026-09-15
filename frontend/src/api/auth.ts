@@ -1,0 +1,3 @@
+import { request } from "./client";
+import type { CurrentUser, TokenResponse } from "../types";
+export const authApi = { login: (username: string, password: string) => request<TokenResponse>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }), me: () => request<CurrentUser>("/auth/me"), logout: () => request<{ revoked_permission_version: number }>("/auth/logout", { method: "POST" }), changePassword: (currentPassword: string, newPassword: string) => request<void>("/auth/change-password", { method: "POST", body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }) };
