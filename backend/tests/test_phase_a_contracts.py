@@ -1,4 +1,4 @@
-﻿"""验证阶段 A 新增领域状态和服务编排行为。"""
+"""验证阶段 A 新增领域状态和服务编排行为。"""
 
 import pytest
 
@@ -105,17 +105,23 @@ def test_permission_policy_default_deny_and_global_allow() -> None:
 class KnowledgeRepository:
     """内存知识仓储。"""
 
-    async def list_units(self, query, status, category_id, page, page_size):
-        """返回两个知识单元。"""
+    async def list_units(self, user, query, status, category_id, page, page_size):
+        """按创建者模拟数据权限过滤并返回知识单元页。"""
         units = (
             KnowledgeUnit("knowledge-1", "可访问", "cat", (), KnowledgeStatus.DRAFT, "user-1", "user-1"),
             KnowledgeUnit("knowledge-2", "不可访问", "cat", (), KnowledgeStatus.DRAFT, "user-2", "user-2"),
         )
-        return units, len(units)
+        allowed = tuple(unit for unit in units if unit.created_by == user.user_id)
+        start = (page - 1) * page_size
+        return allowed[start : start + page_size], len(allowed)
 
     async def get_unit(self, knowledge_id: str):
         """返回指定知识。"""
-        return (await self.list_units("", None, "", 1, 10))[0][0 if knowledge_id == "knowledge-1" else 1]
+        units = (
+            KnowledgeUnit("knowledge-1", "可访问", "cat", (), KnowledgeStatus.DRAFT, "user-1", "user-1"),
+            KnowledgeUnit("knowledge-2", "不可访问", "cat", (), KnowledgeStatus.DRAFT, "user-2", "user-2"),
+        )
+        return units[0 if knowledge_id == "knowledge-1" else 1]
 
 
 class PermissionRepository:

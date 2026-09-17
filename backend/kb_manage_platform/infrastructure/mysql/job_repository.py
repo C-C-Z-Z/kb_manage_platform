@@ -89,6 +89,21 @@ class MysqlJobRepository:
             model.heartbeat_at = datetime.now(UTC)
             await session.commit()
 
+    # 作用：仅刷新当前 Worker 仍然持有的运行中任务心跳。
+    async def touch(self, job_id: str, worker_id: str) -> None:
+        """更新任务心跳时间。"""
+        async with self._session_factory() as session:
+            await session.execute(
+                update(BackgroundJobModel)
+                .where(
+                    BackgroundJobModel.job_id == job_id,
+                    BackgroundJobModel.status == JobStatus.RUNNING.value,
+                    BackgroundJobModel.locked_by == worker_id,
+                )
+                .values(heartbeat_at=datetime.now(UTC))
+            )
+            await session.commit()
+
     # 作用：将失败任务重新放入待处理队列。
     async def retry(self, job_id: str) -> None:
         """重置失败任务状态和尝试次数。"""
@@ -150,19 +165,47 @@ class MysqlJobRepository:
 
     # 作用：回收锁超时任务。
     async def release_stale(self, timeout_seconds: int) -> int:
-        """将执行中但心跳超时的任务恢复为待处理。"""
-        deadline = datetime.now(UTC) - timedelta(seconds=timeout_seconds)
+        """将心跳超时任务重排，超过最大尝试次数时直接失败。"""
+        now = datetime.now(UTC)
+        deadline = now - timedelta(seconds=timeout_seconds)
+        stale_conditions = (
+            BackgroundJobModel.status == JobStatus.RUNNING.value,
+            BackgroundJobModel.heartbeat_at < deadline,
+        )
         async with self._session_factory() as session:
-            result = await session.execute(
+            failed_result = await session.execute(
                 update(BackgroundJobModel)
                 .where(
-                    BackgroundJobModel.status == JobStatus.RUNNING.value,
-                    BackgroundJobModel.heartbeat_at < deadline,
+                    *stale_conditions,
+                    BackgroundJobModel.attempts >= BackgroundJobModel.max_attempts,
                 )
-                .values(status=JobStatus.PENDING.value, locked_by=None, locked_at=None)
+                .values(
+                    status=JobStatus.FAILED.value,
+                    stage=JobStage.FAILED.value,
+                    locked_by=None,
+                    locked_at=None,
+                    heartbeat_at=None,
+                    last_error="job lock timed out after max attempts",
+                )
+            )
+            pending_result = await session.execute(
+                update(BackgroundJobModel)
+                .where(
+                    *stale_conditions,
+                    BackgroundJobModel.attempts < BackgroundJobModel.max_attempts,
+                )
+                .values(
+                    status=JobStatus.PENDING.value,
+                    stage=JobStage.QUEUED.value,
+                    progress=0,
+                    run_at=now,
+                    locked_by=None,
+                    locked_at=None,
+                    heartbeat_at=None,
+                )
             )
             await session.commit()
-            return int(result.rowcount or 0)  # type: ignore
+            return int(failed_result.rowcount or 0) + int(pending_result.rowcount or 0)  # type: ignore
 
     # 作用：将 ORM 任务转换为领域模型。
     @staticmethod

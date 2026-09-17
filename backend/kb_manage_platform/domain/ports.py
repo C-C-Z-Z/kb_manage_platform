@@ -264,6 +264,9 @@ class JobRepositoryPort(Protocol):
     # 作用：更新任务阶段和进度。
     async def update_progress(self, job_id: str, stage: str, progress: int) -> None: ...
 
+    # 作用：刷新当前 Worker 持有任务的心跳。
+    async def touch(self, job_id: str, worker_id: str) -> None: ...
+
     # 作用：将失败任务重新放入待处理队列。
     async def retry(self, job_id: str) -> None: ...
 
@@ -285,9 +288,10 @@ class KnowledgeRepositoryPort(Protocol):
     # 作用：查询知识单元当前版本文档。
     async def get_current_version(self, knowledge_id: str) -> KnowledgeVersion | None: ...
 
-    # 作用：分页查询知识单元。
+    # 作用：按用户数据权限分页查询知识单元。
     async def list_units(
         self,
+        user: UserContext,
         query: str,
         status: KnowledgeStatus | None,
         category_id: str,

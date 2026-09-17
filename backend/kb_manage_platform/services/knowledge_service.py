@@ -62,21 +62,11 @@ class KnowledgeService:
         page: int,
         page_size: int,
     ) -> tuple[tuple[KnowledgeUnit, ...], int]:
-        """按四维权限过滤后返回知识单元页。"""
-        units, _ = await self._repository.list_units(query, status, category_id, 1, 1000)
-        permission_sets = await self._permission_repository.list_grants_batch(
-            tuple(unit.knowledge_id for unit in units)
+        """按四维权限在数据库内过滤并返回知识单元页。"""
+        units, total = await self._repository.list_units(
+            user, query, status, category_id, page, page_size
         )
-        allowed = [
-            unit
-            for unit in units
-            if self._permission_policy.matches(
-                user,
-                permission_sets.get(unit.knowledge_id, KnowledgePermissionSet(unit.knowledge_id, ())).grants,
-            )
-        ]
-        start = (page - 1) * page_size
-        return tuple(allowed[start : start + page_size]), len(allowed)
+        return tuple(units), total
 
     async def get_unit(self, knowledge_id: str, user: UserContext) -> KnowledgeUnit:
         """返回当前用户有权访问的知识单元。"""

@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Mapping
+from contextlib import suppress
 from uuid import uuid4
 
 from kb_manage_platform.domain.ports import JobRepositoryPort
@@ -26,6 +27,7 @@ class MysqlJobWorker:
         self._poll_interval_seconds = poll_interval_seconds
         self._batch_size = batch_size
         self._lock_timeout_seconds = lock_timeout_seconds
+        self._heartbeat_interval_seconds = max(1.0, lock_timeout_seconds / 3)
         self._worker_id = str(uuid4())
         self._running = False
 
@@ -54,9 +56,37 @@ class MysqlJobWorker:
         """返回本次处理任务数量。"""
         await self._repository.release_stale(self._lock_timeout_seconds)
         jobs = await self._repository.claim_batch(self._worker_id, self._batch_size)
-        for job in jobs:
-            await self._execute(job)
+        if not jobs:
+            return 0
+
+        heartbeat_tasks = {
+            job.job_id: asyncio.create_task(
+                self._heartbeat(job.job_id), name=f"job-heartbeat:{job.job_id}"
+            )
+            for job in jobs
+        }
+        try:
+            for job in jobs:
+                await self._execute(job)
+        finally:
+            for task in heartbeat_tasks.values():
+                task.cancel()
+            for task in heartbeat_tasks.values():
+                with suppress(asyncio.CancelledError):
+                    await task
         return len(jobs)
+
+    # 作用：周期刷新同一批次内运行中任务的心跳。
+    async def _heartbeat(self, job_id: str) -> None:
+        """在任务执行期间持续刷新心跳。"""
+        while True:
+            await asyncio.sleep(self._heartbeat_interval_seconds)
+            try:
+                await self._repository.touch(job_id, self._worker_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("job heartbeat failed: %s", job_id)
 
     # 作用：执行单个任务并更新成功或失败状态。
     async def _execute(self, job) -> None:

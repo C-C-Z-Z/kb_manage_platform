@@ -2,7 +2,7 @@
 
 from uuid import uuid4
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kb_manage_platform.infrastructure.mysql.models import (
@@ -15,6 +15,8 @@ from kb_manage_platform.domain.models import (
     KnowledgeStatus,
     KnowledgeUnit,
     KnowledgeVersion,
+    PermissionScope,
+    UserContext,
     VersionStatus,
 )
 
@@ -114,16 +116,20 @@ class MysqlKnowledgeRepository:
             model = await session.get(KnowledgeVersionModel, unit.current_version_id)
             return self._to_version(model) if model else None
 
-    # 作用：分页查询知识单元并支持标题、分类和状态过滤。
+    # 作用：按四维权限在数据库内过滤并分页查询知识单元。
     async def list_units(
         self,
+        user: UserContext,
         query: str,
         status: KnowledgeStatus | None,
         category_id: str,
         page: int,
         page_size: int,
     ) -> tuple[tuple[KnowledgeUnit, ...], int]:
-        """返回知识单元页和总数。"""
+        """返回当前用户有权限访问的知识单元页和总数。"""
+        if not user.is_active:
+            return (), 0
+
         conditions = []
         if query.strip():
             pattern = f"%{query.strip()}%"
@@ -133,21 +139,56 @@ class MysqlKnowledgeRepository:
         if category_id.strip():
             conditions.append(KnowledgeUnitModel.category_id == category_id.strip())
 
-        async with self._session_factory() as session:
-            count_stmt = select(func.count()).select_from(KnowledgeUnitModel)
-            list_stmt = select(KnowledgeUnitModel)
-            if conditions:
-                count_stmt = count_stmt.where(*conditions)
-                list_stmt = list_stmt.where(*conditions)
-            total = int(await session.scalar(count_stmt) or 0)
-            rows = (
-                await session.scalars(
-                    list_stmt
-                    .order_by(KnowledgeUnitModel.updated_at.desc(), KnowledgeUnitModel.knowledge_id.desc())
-                    .offset((page - 1) * page_size)
-                    .limit(page_size)
+        permission_conditions = [
+            KnowledgePermissionModel.scope == PermissionScope.GLOBAL.value,
+            and_(
+                KnowledgePermissionModel.scope == PermissionScope.USER.value,
+                KnowledgePermissionModel.subject_id == user.user_id,
+            ),
+        ]
+        department_conditions = [
+            KnowledgePermissionModel.subject_id == user.department_id,
+        ]
+        if user.department_path:
+            department_conditions.append(
+                and_(
+                    KnowledgePermissionModel.include_descendants.is_(True),
+                    KnowledgePermissionModel.subject_id.in_(user.department_path),
                 )
-            ).all()
+            )
+        permission_conditions.append(
+            and_(
+                KnowledgePermissionModel.scope == PermissionScope.DEPARTMENT.value,
+                or_(*department_conditions),
+            )
+        )
+        if user.role_ids:
+            permission_conditions.append(
+                and_(
+                    KnowledgePermissionModel.scope == PermissionScope.ROLE.value,
+                    KnowledgePermissionModel.subject_id.in_(user.role_ids),
+                )
+            )
+        conditions.append(
+            select(KnowledgePermissionModel.id)
+            .where(
+                KnowledgePermissionModel.knowledge_id == KnowledgeUnitModel.knowledge_id,
+                or_(*permission_conditions),
+            )
+            .exists()
+        )
+
+        async with self._session_factory() as session:
+            count_stmt = select(func.count()).select_from(KnowledgeUnitModel).where(*conditions)
+            list_stmt = (
+                select(KnowledgeUnitModel)
+                .where(*conditions)
+                .order_by(KnowledgeUnitModel.updated_at.desc(), KnowledgeUnitModel.knowledge_id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+            total = int(await session.scalar(count_stmt) or 0)
+            rows = (await session.scalars(list_stmt)).all()
         return tuple(self._to_unit(row) for row in rows), total
 
     # 作用：按知识 ID 查询全部历史版本。
